@@ -1,36 +1,18 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 package io.milvus.client;
 
 import com.google.common.util.concurrent.ListenableFuture;
+import io.grpc.ConnectivityState;
 import org.apache.commons.lang3.exception.ExceptionUtils;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.List;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
-/** The Milvus Client Interface */
-public interface MilvusClient {
+public interface JavaFlavorMilvusClient {
 
   String clientVersion = new Supplier<String>() {
     @Override
@@ -51,16 +33,18 @@ public interface MilvusClient {
     }
   }.get();
 
-  static MilvusClient create(ConnectParam connectParam) {
-    return new MilvusGrpcClient(JavaFlavorMilvusClient.create(connectParam));
+  static JavaFlavorMilvusClient create(ConnectParam connectParam) {
+    return new JavaFlavorMilvusClientImpl(connectParam);
   }
+
+  ConnectivityState getGrpcState();
 
   /**
    * @param timeout
    * @param timeoutUnit
    * @return A Milvus client with the specified timeout
    */
-  MilvusClient withTimeout(long timeout, TimeUnit timeoutUnit);
+  JavaFlavorMilvusClient withTimeout(long timeout, TimeUnit timeoutUnit);
 
   /** @return current Milvus client version */
   default String getClientVersion() {
@@ -102,31 +86,25 @@ public interface MilvusClient {
    * </code>
    * </pre>
    *
-   * @return <code>Response</code>
    * @see CollectionMapping
    * @see MetricType
-   * @see Response
    */
-  Response createCollection(CollectionMapping collectionMapping);
+  void createCollection(CollectionMapping collectionMapping);
 
   /**
    * Checks whether the collection exists
    *
    * @param collectionName collection to check
-   * @return <code>HasCollectionResponse</code>
-   * @see HasCollectionResponse
-   * @see Response
+   * @return true if the collection exists, false otherwise.
    */
-  HasCollectionResponse hasCollection(String collectionName);
+  boolean hasCollection(String collectionName);
 
   /**
    * Drops collection
    *
    * @param collectionName collection to drop
-   * @return <code>Response</code>
-   * @see Response
    */
-  Response dropCollection(String collectionName);
+  void dropCollection(String collectionName);
 
   /**
    * Creates index specified by <code>index</code>
@@ -141,12 +119,10 @@ public interface MilvusClient {
    * </code>
    * </pre>
    *
-   * @return <code>Response</code>
    * @see Index
    * @see IndexType
-   * @see Response
    */
-  Response createIndex(Index index);
+  void createIndex(Index index);
 
   /**
    * Creates index specified by <code>index</code> asynchronously
@@ -164,49 +140,41 @@ public interface MilvusClient {
    * @return a <code>ListenableFuture</code> object which holds the <code>Response</code>
    * @see Index
    * @see IndexType
-   * @see Response
    * @see ListenableFuture
    */
-  ListenableFuture<Response> createIndexAsync(Index index);
+  ListenableFuture<Void> createIndexAsync(Index index);
 
   /**
    * Creates a partition specified by <code>collectionName</code> and <code>tag</code>
    *
    * @param collectionName collection name
    * @param tag partition tag
-   * @return <code>Response</code>
-   * @see Response
    */
-  Response createPartition(String collectionName, String tag);
+  void createPartition(String collectionName, String tag);
 
   /**
    * Checks whether the partition exists
    *
    * @param collectionName collection name
    * @param tag partition tag
-   * @return <code>HasPartitionResponse</code>
-   * @see Response
    */
-  HasPartitionResponse hasPartition(String collectionName, String tag);
+  boolean hasPartition(String collectionName, String tag);
 
   /**
    * Lists current partitions of a collection
    *
    * @param collectionName collection name
-   * @return <code>ListPartitionsResponse</code>
-   * @see ListPartitionsResponse
-   * @see Response
+   * @return partition list of the collection
    */
-  ListPartitionsResponse listPartitions(String collectionName);
+  List<String> listPartitions(String collectionName);
 
   /**
    * Drops partition specified by <code>collectionName</code> and <code>tag</code>
    *
    * @param collectionName collection name
    * @param tag partition tag
-   * @see Response
    */
-  Response dropPartition(String collectionName, String tag);
+  void dropPartition(String collectionName, String tag);
 
   /**
    * Inserts data specified by <code>insertParam</code>
@@ -223,12 +191,10 @@ public interface MilvusClient {
    * </code>
    * </pre>
    *
-   * @return <code>InsertResponse</code>
+   * @return vector ids for the inserted vectors
    * @see InsertParam
-   * @see InsertResponse
-   * @see Response
    */
-  InsertResponse insert(InsertParam insertParam);
+  List<Long> insert(InsertParam insertParam);
 
   /**
    * Inserts data specified by <code>insertParam</code> asynchronously
@@ -245,13 +211,11 @@ public interface MilvusClient {
    * </code>
    * </pre>
    *
-   * @return a <code>ListenableFuture</code> object which holds the <code>InsertResponse</code>
+   * @return a <code>ListenableFuture</code>   holds the list of ids for the inserted vectors.
    * @see InsertParam
-   * @see InsertResponse
-   * @see Response
    * @see ListenableFuture
    */
-  ListenableFuture<InsertResponse> insertAsync(InsertParam insertParam);
+  ListenableFuture<List<Long>> insertAsync(InsertParam insertParam);
 
   /**
    * Searches vectors specified by <code>searchParam</code>
@@ -275,7 +239,7 @@ public interface MilvusClient {
    * @see SearchResponse.QueryResult
    * @see Response
    */
-  SearchResponse search(SearchParam searchParam);
+  SearchResult search(SearchParam searchParam);
 
   /**
    * Searches vectors specified by <code>searchParam</code> asynchronously
@@ -300,7 +264,7 @@ public interface MilvusClient {
    * @see Response
    * @see ListenableFuture
    */
-  ListenableFuture<SearchResponse> searchAsync(SearchParam searchParam);
+  ListenableFuture<SearchResult> searchAsync(SearchParam searchParam);
 
   /**
    * Gets collection info
@@ -310,7 +274,7 @@ public interface MilvusClient {
    * @see CollectionMapping
    * @see Response
    */
-  GetCollectionInfoResponse getCollectionInfo(String collectionName);
+  CollectionMapping getCollectionInfo(String collectionName);
 
   /**
    * Lists current collections
@@ -319,7 +283,7 @@ public interface MilvusClient {
    * @see ListCollectionsResponse
    * @see Response
    */
-  ListCollectionsResponse listCollections();
+  List<String> listCollections();
 
   /**
    * Gets current entity count of a collection
@@ -329,7 +293,7 @@ public interface MilvusClient {
    * @see CountEntitiesResponse
    * @see Response
    */
-  CountEntitiesResponse countEntities(String collectionName);
+  long countEntities(String collectionName);
 
   /**
    * Get server status
@@ -337,7 +301,7 @@ public interface MilvusClient {
    * @return <code>Response</code>
    * @see Response
    */
-  Response getServerStatus();
+  String getServerStatus();
 
   /**
    * Get server version
@@ -345,7 +309,7 @@ public interface MilvusClient {
    * @return <code>Response</code>
    * @see Response
    */
-  Response getServerVersion();
+  String getServerVersion();
 
   /**
    * Sends a command to server
@@ -353,7 +317,7 @@ public interface MilvusClient {
    * @return <code>Response</code> command's response will be return in <code>message</code>
    * @see Response
    */
-  Response command(String command);
+  String command(String command);
 
   /**
    * Pre-loads collection to memory
@@ -362,7 +326,7 @@ public interface MilvusClient {
    * @return <code>Response</code>
    * @see Response
    */
-  Response loadCollection(String collectionName);
+  void loadCollection(String collectionName);
 
   /**
    * Gets collection index information
@@ -372,7 +336,7 @@ public interface MilvusClient {
    * @see Index
    * @see Response
    */
-  GetIndexInfoResponse getIndexInfo(String collectionName);
+  Index getIndexInfo(String collectionName);
 
   /**
    * Drops collection index
@@ -381,7 +345,7 @@ public interface MilvusClient {
    * @return <code>Response</code>
    * @see Response
    */
-  Response dropIndex(String collectionName);
+  void dropIndex(String collectionName);
 
   /**
    * Shows collection information. A collection consists of one or multiple partitions (including
@@ -393,7 +357,7 @@ public interface MilvusClient {
    * @return <code>Response</code>
    * @see Response
    */
-  Response getCollectionStats(String collectionName);
+  String getCollectionStats(String collectionName);
 
   /**
    * Gets vectors data by id array
@@ -404,7 +368,7 @@ public interface MilvusClient {
    * @see GetEntityByIDResponse
    * @see Response
    */
-  GetEntityByIDResponse getEntityByID(String collectionName, List<Long> ids);
+  VectorEntities getEntityByID(String collectionName, List<Long> ids);
 
   /**
    * Gets all vector ids in a segment
@@ -415,7 +379,7 @@ public interface MilvusClient {
    * @see ListIDInSegmentResponse
    * @see Response
    */
-  ListIDInSegmentResponse listIDInSegment(String collectionName, String segmentName);
+  List<Long> listIDInSegment(String collectionName, String segmentName);
 
   /**
    * Deletes data in a collection by a list of ids
@@ -425,7 +389,7 @@ public interface MilvusClient {
    * @return <code>Response</code>
    * @see Response
    */
-  Response deleteEntityByID(String collectionName, List<Long> ids);
+  void deleteEntityByID(String collectionName, List<Long> ids);
 
   /**
    * Flushes data in a list collections. Newly inserted or modifications on data will be visible
@@ -435,7 +399,7 @@ public interface MilvusClient {
    * @return <code>Response</code>
    * @see Response
    */
-  Response flush(List<String> collectionNames);
+  void flush(List<String> collectionNames);
 
   /**
    * Flushes data in a list collections asynchronously. Newly inserted or modifications on data will
@@ -446,7 +410,7 @@ public interface MilvusClient {
    * @see Response
    * @see ListenableFuture
    */
-  ListenableFuture<Response> flushAsync(List<String> collectionNames);
+  ListenableFuture<Void> flushAsync(List<String> collectionNames);
 
   /**
    * Flushes data in a collection. Newly inserted or modifications on data will be visible after
@@ -456,7 +420,7 @@ public interface MilvusClient {
    * @return <code>Response</code>
    * @see Response
    */
-  Response flush(String collectionName);
+  void flush(String collectionName);
 
   /**
    * Flushes data in a collection asynchronously. Newly inserted or modifications on data will be
@@ -467,7 +431,7 @@ public interface MilvusClient {
    * @see Response
    * @see ListenableFuture
    */
-  ListenableFuture<Response> flushAsync(String collectionName);
+  ListenableFuture<Void> flushAsync(String collectionName);
 
   /**
    * Compacts the collection, erasing deleted data from disk and rebuild index in background (if the
@@ -478,7 +442,7 @@ public interface MilvusClient {
    * @return <code>Response</code>
    * @see Response
    */
-  Response compact(String collectionName);
+  void compact(String collectionName);
 
   /**
    * Compacts the collection asynchronously, erasing deleted data from disk and rebuild index in
@@ -490,5 +454,5 @@ public interface MilvusClient {
    * @see Response
    * @see ListenableFuture
    */
-  ListenableFuture<Response> compactAsync(String collectionName);
+  ListenableFuture<Void> compactAsync(String collectionName);
 }

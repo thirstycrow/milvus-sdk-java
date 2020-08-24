@@ -19,7 +19,10 @@
 
 package io.milvus.client;
 
+import org.json.JSONObject;
+
 import javax.annotation.Nonnull;
+import java.util.Objects;
 
 /** Represents an index containing <code>indexType</code> and <code>nList</code> */
 public class Index {

@@ -20,11 +20,25 @@
 package io.milvus.client;
 
 import com.google.common.util.concurrent.ListenableFuture;
+import io.milvus.client.exception.InitializationFailed;
+import io.milvus.client.exception.UnsupportedServerVersion;
 import org.apache.commons.text.RandomStringGenerator;
-import org.json.*;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.HostPortWaitStrategy;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Random;
+import java.util.SplittableRandom;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -33,6 +47,7 @@ import java.util.stream.LongStream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+@Testcontainers
 class MilvusClientTest {
 
   private MilvusClient client;
@@ -42,6 +57,11 @@ class MilvusClientTest {
   private String randomCollectionName;
   private int size;
   private int dimension;
+
+  @Container
+  private GenericContainer milvus =
+      new GenericContainer("milvusdb/milvus:0.10.1-cpu-d072020-bd02b1")
+          .withExposedPorts(19530);
 
   // Helper function that generates random float vectors
   static List<List<Float>> generateFloatVectors(int vectorCount, int dimension) {
@@ -79,13 +99,22 @@ class MilvusClientTest {
     return vector;
   }
 
-  @org.junit.jupiter.api.BeforeEach
-  void setUp() throws Exception {
+  ConnectParam.Builder connectParamBuilder() {
+    return connectParamBuilder(milvus);
+  }
 
-    client = new MilvusGrpcClient();
-    ConnectParam connectParam =
-        new ConnectParam.Builder().withHost("localhost").withPort(19530).build();
-    client.connect(connectParam);
+  ConnectParam.Builder connectParamBuilder(GenericContainer milvusContainer) {
+    return connectParamBuilder(milvusContainer.getHost(), milvusContainer.getFirstMappedPort());
+  }
+
+  ConnectParam.Builder connectParamBuilder(String host, int port) {
+    return new ConnectParam.Builder().withHost(host).withPort(port);
+  }
+
+  @BeforeEach
+  void setUp() throws Exception {
+    ConnectParam connectParam = connectParamBuilder().build();
+    client = MilvusClient.create(connectParam);
 
     generator = new RandomStringGenerator.Builder().withinRange('a', 'z').build();
     randomCollectionName = generator.generate(10);
@@ -100,67 +129,80 @@ class MilvusClientTest {
     assertTrue(client.createCollection(collectionMapping).ok());
   }
 
-  @org.junit.jupiter.api.AfterEach
+  @AfterEach
   void tearDown() throws InterruptedException {
-    assertTrue(client.dropCollection(randomCollectionName).ok());
-    client.disconnect();
+    client.close();
   }
 
-  @org.junit.jupiter.api.Test
-  void idleTest() throws InterruptedException, ConnectFailedException {
-    MilvusClient client = new MilvusGrpcClient();
-    ConnectParam connectParam =
-        new ConnectParam.Builder()
-            .withHost("localhost")
-            .withIdleTimeout(1, TimeUnit.SECONDS)
-            .build();
-    client.connect(connectParam);
+  @Test
+  void idleTest() throws InterruptedException {
+    ConnectParam connectParam = connectParamBuilder()
+        .withIdleTimeout(1, TimeUnit.SECONDS)
+        .build();
+    client = MilvusClient.create(connectParam);
     TimeUnit.SECONDS.sleep(2);
     // A new RPC would take the channel out of idle mode
     assertTrue(client.listCollections().ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void setInvalidConnectParam() {
     assertThrows(
         IllegalArgumentException.class,
         () -> {
-          ConnectParam connectParam = new ConnectParam.Builder().withPort(66666).build();
+          ConnectParam connectParam = connectParamBuilder().withPort(66666).build();
         });
     assertThrows(
         IllegalArgumentException.class,
         () -> {
           ConnectParam connectParam =
-              new ConnectParam.Builder().withConnectTimeout(-1, TimeUnit.MILLISECONDS).build();
+              connectParamBuilder().withConnectTimeout(-1, TimeUnit.MILLISECONDS).build();
         });
     assertThrows(
         IllegalArgumentException.class,
         () -> {
           ConnectParam connectParam =
-              new ConnectParam.Builder().withKeepAliveTime(-1, TimeUnit.MILLISECONDS).build();
+              connectParamBuilder().withKeepAliveTime(-1, TimeUnit.MILLISECONDS).build();
         });
     assertThrows(
         IllegalArgumentException.class,
         () -> {
           ConnectParam connectParam =
-              new ConnectParam.Builder().withKeepAliveTimeout(-1, TimeUnit.MILLISECONDS).build();
+              connectParamBuilder().withKeepAliveTimeout(-1, TimeUnit.MILLISECONDS).build();
         });
     assertThrows(
         IllegalArgumentException.class,
         () -> {
           ConnectParam connectParam =
-              new ConnectParam.Builder().withIdleTimeout(-1, TimeUnit.MILLISECONDS).build();
+              connectParamBuilder().withIdleTimeout(-1, TimeUnit.MILLISECONDS).build();
         });
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void connectUnreachableHost() {
-    MilvusClient client = new MilvusGrpcClient();
-    ConnectParam connectParam = new ConnectParam.Builder().withHost("250.250.250.250").build();
-    assertThrows(ConnectFailedException.class, () -> client.connect(connectParam));
+    int port = milvus.getFirstMappedPort();
+    milvus.stop();
+    assertEquals(Response.Status.RPC_ERROR, client.getServerVersion().getStatus());
+    assertEquals(Response.Status.CLIENT_NOT_CONNECTED, client.getServerVersion().getStatus());
+    assertThrows(InitializationFailed.class,
+        () -> MilvusClient.create(connectParamBuilder(milvus.getHost(), port).build()));
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
+  void unsupportedServerVersion() {
+    GenericContainer unsupportedMilvus =
+        new GenericContainer("milvusdb/milvus:0.9.1-cpu-d052920-e04ed5")
+            .withExposedPorts(19530);
+    try {
+      unsupportedMilvus.start();
+      ConnectParam connectParam = connectParamBuilder(unsupportedMilvus).build();
+      assertThrows(UnsupportedServerVersion.class, () -> MilvusClient.create(connectParam));
+    } finally {
+      unsupportedMilvus.stop();
+    }
+  }
+
+  @Test
   void createInvalidCollection() {
     String invalidCollectionName = "╯°□°）╯";
     CollectionMapping invalidCollectionMapping =
@@ -170,14 +212,14 @@ class MilvusClientTest {
     assertEquals(Response.Status.ILLEGAL_COLLECTION_NAME, createCollectionResponse.getStatus());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void hasCollection() {
     HasCollectionResponse hasCollectionResponse = client.hasCollection(randomCollectionName);
     assertTrue(hasCollectionResponse.ok());
     assertTrue(hasCollectionResponse.hasCollection());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void dropCollection() {
     String nonExistingCollectionName = generator.generate(10);
     Response dropCollectionResponse = client.dropCollection(nonExistingCollectionName);
@@ -185,7 +227,7 @@ class MilvusClientTest {
     assertEquals(Response.Status.COLLECTION_NOT_EXISTS, dropCollectionResponse.getStatus());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void partitionTest() {
     final String tag1 = "tag1";
     Response createPartitionResponse = client.createPartition(randomCollectionName, tag1);
@@ -274,7 +316,7 @@ class MilvusClientTest {
     assertTrue(dropPartitionResponse.ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void createIndex() {
     insert();
     assertTrue(client.flush(randomCollectionName).ok());
@@ -288,7 +330,7 @@ class MilvusClientTest {
     assertTrue(createIndexResponse.ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void createIndexAsync() throws ExecutionException, InterruptedException {
     insert();
     assertTrue(client.flush(randomCollectionName).ok());
@@ -303,7 +345,7 @@ class MilvusClientTest {
     assertTrue(createIndexResponse.ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void insert() {
     List<List<Float>> vectors = generateFloatVectors(size, dimension);
     InsertParam insertParam =
@@ -313,7 +355,7 @@ class MilvusClientTest {
     assertEquals(size, insertResponse.getVectorIds().size());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void insertAsync() throws ExecutionException, InterruptedException {
     List<List<Float>> vectors = generateFloatVectors(size, dimension);
     InsertParam insertParam =
@@ -324,7 +366,7 @@ class MilvusClientTest {
     assertEquals(size, insertResponse.getVectorIds().size());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void insertBinary() {
     final int binaryDimension = 10000;
 
@@ -347,7 +389,7 @@ class MilvusClientTest {
     assertTrue(client.dropCollection(binaryCollectionName).ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void search() {
     List<List<Float>> vectors = generateFloatVectors(size, dimension);
     vectors = vectors.stream().map(MilvusClientTest::normalizeVector).collect(Collectors.toList());
@@ -389,7 +431,7 @@ class MilvusClientTest {
     }
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void searchAsync() throws ExecutionException, InterruptedException {
     List<List<Float>> vectors = generateFloatVectors(size, dimension);
     vectors = vectors.stream().map(MilvusClientTest::normalizeVector).collect(Collectors.toList());
@@ -431,7 +473,7 @@ class MilvusClientTest {
     }
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void searchBinary() {
     final int binaryDimension = 10000;
 
@@ -482,7 +524,7 @@ class MilvusClientTest {
     assertTrue(client.dropCollection(binaryCollectionName).ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void getCollectionInfo() {
     GetCollectionInfoResponse getCollectionInfoResponse =
         client.getCollectionInfo(randomCollectionName);
@@ -498,26 +540,26 @@ class MilvusClientTest {
     assertFalse(getCollectionInfoResponse.getCollectionMapping().isPresent());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void listCollections() {
     ListCollectionsResponse listCollectionsResponse = client.listCollections();
     assertTrue(listCollectionsResponse.ok());
     assertTrue(listCollectionsResponse.getCollectionNames().contains(randomCollectionName));
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void serverStatus() {
     Response serverStatusResponse = client.getServerStatus();
     assertTrue(serverStatusResponse.ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void serverVersion() {
     Response serverVersionResponse = client.getServerVersion();
     assertTrue(serverVersionResponse.ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void countEntities() {
     insert();
     assertTrue(client.flush(randomCollectionName).ok());
@@ -527,7 +569,7 @@ class MilvusClientTest {
     assertEquals(size, countEntitiesResponse.getCollectionEntityCount());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void loadCollection() {
     insert();
     assertTrue(client.flush(randomCollectionName).ok());
@@ -536,7 +578,7 @@ class MilvusClientTest {
     assertTrue(loadCollectionResponse.ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void getIndexInfo() {
     createIndex();
 
@@ -547,13 +589,13 @@ class MilvusClientTest {
     assertEquals(getIndexInfoResponse.getIndex().get().getIndexType(), IndexType.IVF_SQ8);
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void dropIndex() {
     Response dropIndexResponse = client.dropIndex(randomCollectionName);
     assertTrue(dropIndexResponse.ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void getCollectionStats() {
     insert();
 
@@ -577,7 +619,7 @@ class MilvusClientTest {
     assertEquals(segmentInfo.getInt("row_count"), size);
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void getEntityByID() {
     List<List<Float>> vectors = generateFloatVectors(size, dimension);
     InsertParam insertParam =
@@ -599,7 +641,7 @@ class MilvusClientTest {
         getEntityByIDResponse.getFloatVectors().get(0).toArray(), vectors.get(0).toArray());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void getVectorIds() {
     insert();
 
@@ -622,7 +664,7 @@ class MilvusClientTest {
     assertFalse(listIDInSegmentResponse.getIds().isEmpty());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void deleteEntityByID() {
     List<List<Float>> vectors = generateFloatVectors(size, dimension);
     InsertParam insertParam =
@@ -639,17 +681,17 @@ class MilvusClientTest {
     assertEquals(client.countEntities(randomCollectionName).getCollectionEntityCount(), size - 100);
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void flush() {
     assertTrue(client.flush(randomCollectionName).ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void flushAsync() throws ExecutionException, InterruptedException {
     assertTrue(client.flushAsync(randomCollectionName).get().ok());
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void compact() {
     List<List<Float>> vectors = generateFloatVectors(size, dimension);
     InsertParam insertParam =
@@ -693,7 +735,7 @@ class MilvusClientTest {
     assertTrue(currentSegmentSize < previousSegmentSize);
   }
 
-  @org.junit.jupiter.api.Test
+  @Test
   void compactAsync() throws ExecutionException, InterruptedException {
     List<List<Float>> vectors = generateFloatVectors(size, dimension);
     InsertParam insertParam =
