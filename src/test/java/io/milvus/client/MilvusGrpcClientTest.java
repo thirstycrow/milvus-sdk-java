@@ -22,10 +22,11 @@ package io.milvus.client;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.grpc.NameResolverProvider;
 import io.grpc.NameResolverRegistry;
-import io.milvus.client.exception.InitializationException;
+import io.milvus.client.exception.MilvusGrpcException;
 import io.milvus.client.exception.UnsupportedServerVersion;
 import org.apache.commons.text.RandomStringGenerator;
-import org.json.*;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.junit.jupiter.api.condition.DisabledIfSystemProperty;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.testcontainers.containers.GenericContainer;
@@ -34,7 +35,11 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Random;
+import java.util.SplittableRandom;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -42,11 +47,15 @@ import java.util.stream.DoubleStream;
 import java.util.stream.IntStream;
 import java.util.stream.LongStream;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Testcontainers
 @EnabledIfSystemProperty(named = "with-containers", matches = "true")
-class ContainerMilvusClientTest extends MilvusClientTest {
+class ContainerMilvusClientTest extends MilvusGrpcClientTest {
   @Container
   private static GenericContainer milvusContainer =
       new GenericContainer("milvusdb/milvus:0.10.1-cpu-d072020-bd02b1")
@@ -70,7 +79,7 @@ class ContainerMilvusClientTest extends MilvusClientTest {
   @org.junit.jupiter.api.Test
   void unsupportedServerVersion() {
     ConnectParam connectParam = connectParamBuilder(unsupportedMilvusContainer).build();
-    assertThrows(UnsupportedServerVersion.class, () -> new MilvusGrpcClient(connectParam));
+    assertThrows(UnsupportedServerVersion.class, () -> MilvusClientFactory.createClassicMilvusClient(connectParam));
   }
 
   @org.junit.jupiter.api.Test
@@ -86,7 +95,7 @@ class ContainerMilvusClientTest extends MilvusClientTest {
         .withTarget(testNameResolverProvider.getDefaultScheme() + ":///test")
         .build();
 
-    MilvusClient client = new MilvusGrpcClient(connectParam);
+    MilvusClient client = MilvusClientFactory.createClassicMilvusClient(connectParam);
     List<String> serverVersions = IntStream.range(0, 100)
         .mapToObj(i -> client.getServerVersion().getMessage())
         .collect(Collectors.toList());
@@ -96,7 +105,7 @@ class ContainerMilvusClientTest extends MilvusClientTest {
 }
 
 @DisabledIfSystemProperty(named = "with-containers", matches = "true")
-class MilvusClientTest {
+class MilvusGrpcClientTest {
 
   private MilvusClient client;
 
@@ -157,7 +166,7 @@ class MilvusClientTest {
   @org.junit.jupiter.api.BeforeEach
   void setUp() throws Exception {
     ConnectParam connectParam = connectParamBuilder().build();
-    client = new MilvusGrpcClient(connectParam);
+    client = MilvusClientFactory.createClassicMilvusClient(connectParam);
 
     generator = new RandomStringGenerator.Builder().withinRange('a', 'z').build();
     randomCollectionName = generator.generate(10);
@@ -183,7 +192,7 @@ class MilvusClientTest {
     ConnectParam connectParam = connectParamBuilder()
         .withIdleTimeout(1, TimeUnit.SECONDS)
         .build();
-    MilvusClient client = new MilvusGrpcClient(connectParam);
+    MilvusClient client = MilvusClientFactory.createClassicMilvusClient(connectParam);
     TimeUnit.SECONDS.sleep(2);
     // A new RPC would take the channel out of idle mode
     assertTrue(client.listCollections().ok());
@@ -225,10 +234,9 @@ class MilvusClientTest {
   @org.junit.jupiter.api.Test
   void connectUnreachableHost() {
     ConnectParam connectParam = connectParamBuilder("250.250.250.250", 19530).build();
-    assertThrows(InitializationException.class, () -> new MilvusGrpcClient(connectParam));
+    assertThrows(MilvusGrpcException.class, () -> MilvusClientFactory.createClassicMilvusClient(connectParam));
   }
 
-  @org.junit.jupiter.api.Test
   void grpcTimeout() {
     insert();
     MilvusClient timeoutClient = client.withTimeout(1, TimeUnit.MILLISECONDS);
@@ -428,7 +436,7 @@ class MilvusClientTest {
   @org.junit.jupiter.api.Test
   void search() {
     List<List<Float>> vectors = generateFloatVectors(size, dimension);
-    vectors = vectors.stream().map(MilvusClientTest::normalizeVector).collect(Collectors.toList());
+    vectors = vectors.stream().map(MilvusGrpcClientTest::normalizeVector).collect(Collectors.toList());
     InsertParam insertParam =
         new InsertParam.Builder(randomCollectionName).withFloatVectors(vectors).build();
     InsertResponse insertResponse = client.insert(insertParam);
@@ -470,7 +478,7 @@ class MilvusClientTest {
   @org.junit.jupiter.api.Test
   void searchAsync() throws ExecutionException, InterruptedException {
     List<List<Float>> vectors = generateFloatVectors(size, dimension);
-    vectors = vectors.stream().map(MilvusClientTest::normalizeVector).collect(Collectors.toList());
+    vectors = vectors.stream().map(MilvusGrpcClientTest::normalizeVector).collect(Collectors.toList());
     InsertParam insertParam =
         new InsertParam.Builder(randomCollectionName).withFloatVectors(vectors).build();
     InsertResponse insertResponse = client.insert(insertParam);

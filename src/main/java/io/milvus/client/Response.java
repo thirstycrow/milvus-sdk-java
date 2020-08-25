@@ -19,6 +19,9 @@
 
 package io.milvus.client;
 
+import io.milvus.client.exception.MilvusGrpcException;
+import io.milvus.client.exception.ServerSideMilvusException;
+
 import java.util.Arrays;
 import java.util.Optional;
 
@@ -26,9 +29,19 @@ import java.util.Optional;
  * Represents response of a client call. Contains a <code>status</code> and a <code>message</code>
  */
 public class Response {
+  public static final Response SUCCESS = new Response(Status.SUCCESS);
+  public static final Response CLIENT_NOT_CONNECTED = new Response(Status.CLIENT_NOT_CONNECTED);
 
   private final Status status;
   private final String message;
+
+  public Response(ServerSideMilvusException ex) {
+    this(Status.valueOf(ex.getErrorCode().getNumber()), ex.getReason());
+  }
+
+  public Response(MilvusGrpcException ex) {
+    this(Status.RPC_ERROR, ex.toString());
+  }
 
   public Response(Status status, String message) {
     this.status = status;
